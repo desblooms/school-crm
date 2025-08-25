@@ -1,7 +1,13 @@
 <?php
+// Simple Login - No complex security for testing
 require_once 'config/config.php';
-require_once 'includes/auth.php';
 
+// Start session if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Redirect if already logged in
 if (isset($_SESSION['user_id'])) {
     header('Location: index.php');
     exit();
@@ -17,44 +23,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_message = 'Please fill in all fields';
     } else {
         try {
-            // Try complex auth first, fallback to simple
-            if (class_exists('Auth')) {
-                $auth = new Auth();
-                $login_result = $auth->login($email, $password);
+            // Direct database connection
+            require_once 'config/database.php';
+            $db = Database::getInstance()->getConnection();
+            
+            $stmt = $db->prepare("SELECT id, name, email, password, role FROM users WHERE email = ? LIMIT 1");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+            
+            if ($user && password_verify($password, $user['password'])) {
+                // Login successful
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['user_name'] = $user['name'];
+                $_SESSION['user_email'] = $user['email'];
+                $_SESSION['user_role'] = $user['role'];
                 
-                if ($login_result['success']) {
-                    header('Location: index.php');
-                    exit();
-                } else {
-                    $error_message = $login_result['message'];
+                // Log activity (optional)
+                try {
+                    $log_stmt = $db->prepare("INSERT INTO activity_logs (user_id, action, description, ip_address, user_agent, created_at) VALUES (?, 'login', 'User logged in', ?, ?, NOW())");
+                    $log_stmt->execute([
+                        $user['id'],
+                        $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+                        $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
+                    ]);
+                } catch (Exception $e) {
+                    // Ignore logging errors
                 }
+                
+                header('Location: index.php');
+                exit();
             } else {
-                throw new Exception('Auth class not found');
+                $error_message = 'Invalid email or password';
             }
         } catch (Exception $e) {
-            // Fallback to simple login
-            try {
-                require_once 'config/database.php';
-                $db = Database::getInstance()->getConnection();
-                
-                $stmt = $db->prepare("SELECT id, name, email, password, role FROM users WHERE email = ? LIMIT 1");
-                $stmt->execute([$email]);
-                $user = $stmt->fetch();
-                
-                if ($user && password_verify($password, $user['password'])) {
-                    $_SESSION['user_id'] = $user['id'];
-                    $_SESSION['user_name'] = $user['name'];
-                    $_SESSION['user_email'] = $user['email'];
-                    $_SESSION['user_role'] = $user['role'];
-                    
-                    header('Location: index.php');
-                    exit();
-                } else {
-                    $error_message = 'Invalid email or password';
-                }
-            } catch (Exception $e2) {
-                $error_message = 'Login system error. Please contact administrator.';
-            }
+            $error_message = 'Login failed: ' . $e->getMessage();
         }
     }
 }
@@ -107,14 +109,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                            class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                            placeholder="Enter your password">
                 </div>
-            </div>
-
-            <div class="flex items-center justify-between">
-                <label class="flex items-center">
-                    <input type="checkbox" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                    <span class="ml-2 text-sm text-gray-600">Remember me</span>
-                </label>
-                <a href="forgot-password.php" class="text-sm text-blue-600 hover:text-blue-500">Forgot password?</a>
             </div>
 
             <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200">
