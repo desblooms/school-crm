@@ -8,9 +8,9 @@ define('DEBUG_MODE', ENVIRONMENT === 'development');
 
 // Database Configuration
 define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_NAME', getenv('DB_NAME') ?: 'u345095192_school');
-define('DB_USER', getenv('DB_USER') ?: 'u345095192_school');
-define('DB_PASS', getenv('DB_PASS') ?: 'Datb@788');
+define('DB_NAME', getenv('DB_NAME') ?: 'u345095192_bilgixschool');
+define('DB_USER', getenv('DB_USER') ?: 'u345095192_bilgixschool');
+define('DB_PASS', getenv('DB_PASS') ?: 'Bilgix@788');
 
 // Application Configuration
 define('APP_NAME', getenv('APP_NAME') ?: 'School CRM');
