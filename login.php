@@ -17,44 +17,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_message = 'Please fill in all fields';
     } else {
         try {
-            // Try complex auth first, fallback to simple
-            if (class_exists('Auth')) {
-                $auth = new Auth();
-                $login_result = $auth->login($email, $password);
-                
-                if ($login_result['success']) {
-                    header('Location: index.php');
-                    exit();
-                } else {
-                    $error_message = $login_result['message'];
-                }
-            } else {
-                throw new Exception('Auth class not found');
-            }
-        } catch (Exception $e) {
-            // Fallback to simple login
-            try {
-                require_once 'config/database.php';
-                $db = Database::getInstance()->getConnection();
-                
-                $stmt = $db->prepare("SELECT id, name, email, password, role FROM users WHERE email = ? LIMIT 1");
-                $stmt->execute([$email]);
-                $user = $stmt->fetch();
-                
-                if ($user && password_verify($password, $user['password'])) {
+            require_once 'config/database.php';
+            $db = Database::getInstance()->getConnection();
+            
+            $stmt = $db->prepare("SELECT id, name, email, password, role, status FROM users WHERE email = ? LIMIT 1");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+            
+            if ($user) {
+                if ($user['status'] !== 'active') {
+                    $error_message = 'Account is not active';
+                } else if (password_verify($password, $user['password'])) {
+                    // Successful login
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['user_name'] = $user['name'];
                     $_SESSION['user_email'] = $user['email'];
                     $_SESSION['user_role'] = $user['role'];
+                    $_SESSION['login_time'] = time();
+                    $_SESSION['last_activity'] = time();
+                    
+                    session_regenerate_id(true);
+                    
+                    header('Location: index.php');
+                    exit();
+                } else if ($password === $user['password']) {
+                    // Handle plain text password (update to hashed)
+                    $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+                    $updateStmt = $db->prepare("UPDATE users SET password = ? WHERE id = ?");
+                    $updateStmt->execute([$hashedPassword, $user['id']]);
+                    
+                    $_SESSION['user_id'] = $user['id'];
+                    $_SESSION['user_name'] = $user['name'];
+                    $_SESSION['user_email'] = $user['email'];
+                    $_SESSION['user_role'] = $user['role'];
+                    $_SESSION['login_time'] = time();
+                    $_SESSION['last_activity'] = time();
                     
                     header('Location: index.php');
                     exit();
                 } else {
                     $error_message = 'Invalid email or password';
                 }
-            } catch (Exception $e2) {
-                $error_message = 'Login system error. Please contact administrator.';
+            } else {
+                $error_message = 'Invalid email or password';
             }
+        } catch (Exception $e) {
+            $error_message = 'Login system error. Please try again.';
         }
     }
 }
