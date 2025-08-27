@@ -416,9 +416,9 @@ class SecurityManager {
 SecurityManager::init();
 
 /**
- * Helper function to require permission
+ * Helper function to require permission (renamed to avoid conflict with auth.php)
  */
-function requirePermission($permission) {
+function requireSecurityPermission($permission) {
     if (!SecurityManager::checkPermission($permission)) {
         SecurityManager::logSecurityEvent('Permission denied', [
             'required_permission' => $permission,
