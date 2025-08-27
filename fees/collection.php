@@ -20,19 +20,31 @@ $db = Database::getInstance()->getConnection();
 // Get classes from database
 $classes = [];
 try {
-    $stmt = $db->query("SELECT id, name, section FROM classes ORDER BY name, section");
+    $stmt = $db->query("SELECT id, class_name as name, section FROM classes ORDER BY class_name, section");
     $classes = $stmt->fetchAll();
 } catch (Exception $e) {
-    // Classes table might not exist
+    // Classes table might not exist, try alternative column names
+    try {
+        $stmt = $db->query("SELECT id, name, section FROM classes ORDER BY name, section");
+        $classes = $stmt->fetchAll();
+    } catch (Exception $e2) {
+        // Classes table doesn't exist at all
+    }
 }
 
 // Get fee types from database
 $feeTypes = [];
 try {
-    $stmt = $db->query("SELECT id, name, description FROM fee_types ORDER BY name");
+    $stmt = $db->query("SELECT id, fee_name as name, description FROM fee_types ORDER BY fee_name");
     $feeTypes = $stmt->fetchAll();
 } catch (Exception $e) {
-    // Fee types table might not exist
+    // Fee types table might not exist, try alternative column names
+    try {
+        $stmt = $db->query("SELECT id, name, description FROM fee_types ORDER BY name");
+        $feeTypes = $stmt->fetchAll();
+    } catch (Exception $e2) {
+        // Fee types table doesn't exist at all
+    }
 }
 
 $success_message = '';
@@ -48,14 +60,21 @@ $debug = $_GET['debug'] ?? false;
 $students = [];
 if ($selectedClass) {
     try {
-        $stmt = $db->prepare("SELECT id, name, admission_number FROM students WHERE class_id = ? ORDER BY name");
+        $stmt = $db->prepare("SELECT id, student_name as name, admission_number FROM students WHERE class_id = ? ORDER BY student_name");
         $stmt->execute([$selectedClass]);
         $students = $stmt->fetchAll();
         if ($debug) {
             error_log("Selected class: $selectedClass, Found students: " . count($students));
         }
     } catch (Exception $e) {
-        // Students table might not exist
+        // Students table might not exist, try alternative column names
+        try {
+            $stmt = $db->prepare("SELECT id, name, admission_number FROM students WHERE class_id = ? ORDER BY name");
+            $stmt->execute([$selectedClass]);
+            $students = $stmt->fetchAll();
+        } catch (Exception $e2) {
+            // Students table doesn't exist at all
+        }
     }
 }
 
@@ -63,11 +82,11 @@ if ($selectedClass) {
 $studentFeeStatus = [];
 if ($selectedStudent) {
     try {
-        // Basic fee structure query - adapt as needed based on your actual database structure
+        // Basic fee structure query - try with proper column names first
         $stmt = $db->prepare("
             SELECT 
                 s.id as student_id,
-                s.name as student_name,
+                s.student_name as student_name,
                 s.admission_number,
                 'Tuition Fee' as fee_type_name,
                 1 as fee_type_id,
@@ -82,7 +101,7 @@ if ($selectedStudent) {
             FROM students s
             LEFT JOIN fee_payments fp ON s.id = fp.student_id
             WHERE s.id = ?
-            GROUP BY s.id, s.name, s.admission_number
+            GROUP BY s.id, s.student_name, s.admission_number
         ");
         $stmt->execute([$selectedStudent]);
         $studentFeeStatus = $stmt->fetchAll();
@@ -154,7 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['collect_fee'])) {
                     $stmt = $db->prepare("
                         SELECT 
                             s.id as student_id,
-                            s.name as student_name,
+                            s.student_name as student_name,
                             s.admission_number,
                             'Tuition Fee' as fee_type_name,
                             1 as fee_type_id,
@@ -169,7 +188,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['collect_fee'])) {
                         FROM students s
                         LEFT JOIN fee_payments fp ON s.id = fp.student_id
                         WHERE s.id = ?
-                        GROUP BY s.id, s.name, s.admission_number
+                        GROUP BY s.id, s.student_name, s.admission_number
                     ");
                     $stmt->execute([$selectedStudent]);
                     $studentFeeStatus = $stmt->fetchAll();
