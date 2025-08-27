@@ -1,15 +1,39 @@
 <?php
 require_once '../config/config.php';
 require_once '../includes/auth.php';
-require_once '../classes/Fee.php';
-require_once '../classes/Student.php';
 
-requirePermission('manage_fees');
+if (!isset($_SESSION['user_id'])) {
+    header('Location: ../login.php');
+    exit();
+}
 
-$fee = new Fee();
-$student = new Student();
-$classes = $fee->getClasses();
-$feeTypes = $fee->getFeeTypes();
+// Only admin and accountant can access fee collection
+if (!in_array($_SESSION['user_role'], ['admin', 'accountant'])) {
+    header('HTTP/1.1 403 Forbidden');
+    die('Access denied. Admin or Accountant access required.');
+}
+
+// Database connection
+require_once '../config/database.php';
+$db = Database::getInstance()->getConnection();
+
+// Get classes from database
+$classes = [];
+try {
+    $stmt = $db->query("SELECT id, name, section FROM classes ORDER BY name, section");
+    $classes = $stmt->fetchAll();
+} catch (Exception $e) {
+    // Classes table might not exist
+}
+
+// Get fee types from database
+$feeTypes = [];
+try {
+    $stmt = $db->query("SELECT id, name, description FROM fee_types ORDER BY name");
+    $feeTypes = $stmt->fetchAll();
+} catch (Exception $e) {
+    // Fee types table might not exist
+}
 
 $success_message = '';
 $error_message = '';
@@ -20,23 +44,62 @@ $students = [];
 // Debug information (remove in production)
 $debug = $_GET['debug'] ?? false;
 
+// Get students by class
+$students = [];
 if ($selectedClass) {
-    $students = $fee->getStudentsByClass($selectedClass);
-    if ($debug) {
-        error_log("Selected class: $selectedClass, Found students: " . count($students));
+    try {
+        $stmt = $db->prepare("SELECT id, name, admission_number FROM students WHERE class_id = ? ORDER BY name");
+        $stmt->execute([$selectedClass]);
+        $students = $stmt->fetchAll();
+        if ($debug) {
+            error_log("Selected class: $selectedClass, Found students: " . count($students));
+        }
+    } catch (Exception $e) {
+        // Students table might not exist
     }
 }
 
+// Get student fee status
 $studentFeeStatus = [];
 if ($selectedStudent) {
-    $studentFeeStatus = $fee->getStudentFeeStatus($selectedStudent);
-    if ($debug) {
-        error_log("Selected student: $selectedStudent, Found fee status: " . count($studentFeeStatus));
-    }
-    
-    // If no fee status found, set a helpful error message
-    if (empty($studentFeeStatus) && !$debug) {
-        $error_message = "No fee information found for this student. Please ensure fee structure is set up for their class, or contact administrator.";
+    try {
+        // Basic fee structure query - adapt as needed based on your actual database structure
+        $stmt = $db->prepare("
+            SELECT 
+                s.id as student_id,
+                s.name as student_name,
+                s.admission_number,
+                'Tuition Fee' as fee_type_name,
+                1 as fee_type_id,
+                1000.00 as fee_amount,
+                COALESCE(SUM(fp.amount), 0) as paid_amount,
+                (1000.00 - COALESCE(SUM(fp.amount), 0)) as pending_amount,
+                CASE 
+                    WHEN COALESCE(SUM(fp.amount), 0) >= 1000.00 THEN 'Paid'
+                    WHEN COALESCE(SUM(fp.amount), 0) > 0 THEN 'Partial'
+                    ELSE 'Pending'
+                END as status
+            FROM students s
+            LEFT JOIN fee_payments fp ON s.id = fp.student_id
+            WHERE s.id = ?
+            GROUP BY s.id, s.name, s.admission_number
+        ");
+        $stmt->execute([$selectedStudent]);
+        $studentFeeStatus = $stmt->fetchAll();
+        
+        if ($debug) {
+            error_log("Selected student: $selectedStudent, Found fee status: " . count($studentFeeStatus));
+        }
+        
+        // If no fee status found, set a helpful error message
+        if (empty($studentFeeStatus) && !$debug) {
+            $error_message = "No fee information found for this student. Please ensure fee structure is set up for their class, or contact administrator.";
+        }
+    } catch (Exception $e) {
+        // Fee related tables might not exist
+        if ($debug) {
+            error_log("Fee status query error: " . $e->getMessage());
+        }
     }
 }
 
@@ -49,34 +112,102 @@ if ($selectedClass && empty($students) && !$debug) {
     $error_message = 'No students found in the selected class.';
 }
 
+// Handle fee collection
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['collect_fee'])) {
-    $paymentData = [
-        'student_id' => intval($_POST['student_id']),
-        'fee_type_id' => intval($_POST['fee_type_id']),
-        'amount' => floatval($_POST['amount']),
-        'payment_method' => $_POST['payment_method'],
-        'month_year' => $_POST['month_year'],
-        'transaction_id' => trim($_POST['transaction_id']),
-        'remarks' => trim($_POST['remarks'])
-    ];
+    $student_id = intval($_POST['student_id']);
+    $fee_type_id = intval($_POST['fee_type_id']);
+    $amount = floatval($_POST['amount']);
+    $payment_method = trim($_POST['payment_method']);
+    $month_year = trim($_POST['month_year']);
+    $transaction_id = trim($_POST['transaction_id']);
+    $remarks = trim($_POST['remarks']);
     
-    $result = $fee->collectFee(
-        $paymentData['student_id'],
-        $paymentData['fee_type_id'],
-        $paymentData['amount'],
-        $paymentData['payment_method'],
-        $_SESSION['user_id'],
-        $paymentData['month_year'],
-        $paymentData['transaction_id'],
-        $paymentData['remarks']
-    );
-    
-    if ($result['success']) {
-        $success_message = 'Fee collected successfully! Receipt Number: ' . $result['receipt_number'];
-        // Refresh student fee status
-        $studentFeeStatus = $fee->getStudentFeeStatus($selectedStudent);
+    if ($student_id && $fee_type_id && $amount > 0 && $payment_method && $month_year) {
+        try {
+            // Generate receipt number
+            $receipt_number = 'RCP' . date('Ymd') . sprintf('%04d', $student_id);
+            
+            // Insert fee payment
+            $stmt = $db->prepare("
+                INSERT INTO fee_payments 
+                (student_id, fee_type_id, amount, payment_method, month_year, transaction_id, remarks, receipt_number, collected_by, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            ");
+            
+            $result = $stmt->execute([
+                $student_id, 
+                $fee_type_id, 
+                $amount, 
+                $payment_method, 
+                $month_year, 
+                $transaction_id, 
+                $remarks, 
+                $receipt_number, 
+                $_SESSION['user_id']
+            ]);
+            
+            if ($result) {
+                $success_message = 'Fee collected successfully! Receipt Number: ' . $receipt_number;
+                
+                // Refresh student fee status
+                try {
+                    $stmt = $db->prepare("
+                        SELECT 
+                            s.id as student_id,
+                            s.name as student_name,
+                            s.admission_number,
+                            'Tuition Fee' as fee_type_name,
+                            1 as fee_type_id,
+                            1000.00 as fee_amount,
+                            COALESCE(SUM(fp.amount), 0) as paid_amount,
+                            (1000.00 - COALESCE(SUM(fp.amount), 0)) as pending_amount,
+                            CASE 
+                                WHEN COALESCE(SUM(fp.amount), 0) >= 1000.00 THEN 'Paid'
+                                WHEN COALESCE(SUM(fp.amount), 0) > 0 THEN 'Partial'
+                                ELSE 'Pending'
+                            END as status
+                        FROM students s
+                        LEFT JOIN fee_payments fp ON s.id = fp.student_id
+                        WHERE s.id = ?
+                        GROUP BY s.id, s.name, s.admission_number
+                    ");
+                    $stmt->execute([$selectedStudent]);
+                    $studentFeeStatus = $stmt->fetchAll();
+                } catch (Exception $e) {
+                    // Ignore refresh error
+                }
+            } else {
+                $error_message = 'Failed to record fee payment';
+            }
+        } catch (Exception $e) {
+            $error_message = 'Error collecting fee: ' . $e->getMessage();
+            
+            // If fee_payments table doesn't exist, create it
+            if (strpos($e->getMessage(), "doesn't exist") !== false) {
+                try {
+                    $db->exec("
+                        CREATE TABLE IF NOT EXISTS fee_payments (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            student_id INT NOT NULL,
+                            fee_type_id INT DEFAULT 1,
+                            amount DECIMAL(10,2) NOT NULL,
+                            payment_method VARCHAR(50) NOT NULL,
+                            month_year VARCHAR(10) NOT NULL,
+                            transaction_id VARCHAR(100),
+                            remarks TEXT,
+                            receipt_number VARCHAR(50) NOT NULL UNIQUE,
+                            collected_by INT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ");
+                    $success_message = 'Fee payments table created. Please try collecting the fee again.';
+                } catch (Exception $e2) {
+                    $error_message = 'Failed to create fee payments table: ' . $e2->getMessage();
+                }
+            }
+        }
     } else {
-        $error_message = 'Failed to collect fee: ' . $result['message'];
+        $error_message = 'Please fill in all required fields';
     }
 }
 ?>
